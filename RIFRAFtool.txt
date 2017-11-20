@@ -1,0 +1,392 @@
+
+/*
+Welcome to the FIRE model. This version allows for easy modification of the Thresholds 
+and weights.
+
+Designed by the Missouri River Climate Team II at NASA DEVELOP in NCEI, Asheville NC.
+
+
+
+
+
+
+
+*/
+//Thresholds 
+
+var tempAnomalyThreshold = 10; 
+//The departure of the current daily average temperature from the historical daily average temperatures in degrees Celsius
+//Temperatures above or equal to this number contribute to increased risk of wildfire
+
+var rhThreshold = 30; 
+//Percent relative humidity
+//Relative humidity less than or equal to this number contribute to increased risk of wildfire
+
+var windThreshold = 30; 
+// The daily maximum windspeed in mph
+//Windspeed greater than or equal to this number contribute to increased risk of wildfire
+
+var pdsiThreshold = -2; 
+// PDSI (Palmer Drought Severity Index). Negative values indicate drier than average
+//Values equal to or less than above number contribute toward increased risk of wildfire
+
+var wettingRainThreshold = 2.54; 
+//Cumulative rainfall in millimeters over the past 3 days
+//Values equal to or greater than this number contribute toward decreased risk of wildfire 
+
+var soakingRainThreshold =12.7; 
+//Cumulative rainfall in millimeters over the past 5 days
+//Values equal to or greater than this number contribute toward decreased risk of wildfire
+
+//The FIRE Code is below this line
+
+
+//declaring date/time Constants
+var DAY = 86400000; // one day in milliseconds
+var WEEK = DAY * 7; 
+
+var clipper = function (image){
+  return image.clip(fc)}; // a function to clip the images to the MRB
+  
+//Import Missour River Basin shapefile from fusion table
+var fc = ee.FeatureCollection("ft:1JYgzhB2MQswT8tFsKUmsUfE4__A8kxW2CNZXNY5l",'geometry'); //shapefile for MRB
+var boundaries = ee.FeatureCollection("ft:1MPMT5PYL1Q95xmKOELo21j6I3iH6pU5B6B81UChI", 'geometry'); //shapefile for BIA lands
+
+// Get current date 
+var currentDate = new Date().getTime();
+
+//Import data from Google Collections 
+
+var windCol = ee.ImageCollection('NOAA/NWS/RTMA')
+  .select('WIND');
+var wind_dates = ee.List(windCol.get('date_range'));
+var recent_wind = wind_dates.get(1); 
+var v = ee.Date(recent_wind); 
+var wind_start = v.advance(-1.5, 'day');
+var wind = windCol.filterDate(wind_start, recent_wind);
+
+var dewCol = ee.ImageCollection('NOAA/NWS/RTMA')
+  .select('DPT');
+var dew_dates = ee.List(dewCol.get('date_range'));
+var recent_dew = dew_dates.get(1); 
+var c = ee.Date(recent_dew); 
+var dew_start = c.advance(-1, 'day');
+var dew = dewCol.filterDate(dew_start, recent_dew);
+
+var tempCol = ee.ImageCollection('NOAA/NWS/RTMA')
+  .select('TMP');
+var temp_dates = ee.List(tempCol.get('date_range'));
+var recent_temp = temp_dates.get(1); 
+var r = ee.Date(recent_temp); 
+var temp_start = r.advance(-1, 'day');
+var temp = tempCol.filterDate(temp_start, recent_temp);
+
+var precip_soaking = ee.ImageCollection('NASA/GPM_L3/IMERG')
+  .select('precipitationCal');
+var precip_dates = ee.List(precip_soaking.get('date_range'));
+var recent_precip = precip_dates.get(1); 
+var p = ee.Date(recent_precip); 
+var precip_start = p.advance(-5, 'day'); //this collects the precipitaiton for the previous 5 days. Change the number to collect a different date set
+var precip = precip_soaking.filterDate(precip_start, recent_precip);
+
+var precip2day_wetting = ee.ImageCollection('NASA/GPM_L3/IMERG')
+  .select('precipitationCal');
+var precip2day_dates = ee.List(precip2day_wetting.get('date_range'));
+var recent_precip2day = precip2day_dates.get(1); 
+var q = ee.Date(recent_precip2day); 
+var precip2day_start = q.advance(-2, 'day');//this collects the precipitaiton for the previous 2 days. 
+var precip2day = precip2day_wetting.filterDate(precip2day_start, recent_precip2day);
+
+//Linear Temp approximation from nClimbGid monthly temperature averages (interpolates monthly average 1901-2000 normals to daily average normals  
+function daysInMonth(month,year) {
+    return new Date(year, month, 0).getDate();
+}
+
+var date = new Date(); // get the new date
+var currentYear = date.getYear();
+var currentMonth = date.getMonth(); //Get the month (0-11)
+var currentDay = date.getDate(); //Get the day as a number (1-31)
+//var daysMonth = Date.getDaysInMonth(currentYear, currentMonth); //find the number of days in month
+
+var getDaysInMonth = function(month,year) {
+  // Here January is 1 based
+  //Day 0 is the last day in the previous month
+ return new Date(year, month, 0).getDate();
+};
+var daysMonth = getDaysInMonth(currentMonth + 1, currentYear);
+var midMonth = daysMonth / 2;
+var daysFromMidmonth=daysMonth-midMonth;
+var surroundingMonth = 0;
+
+//print("Date: " + date);
+//print("Month from 0: " + currentMonth);
+//print('Day: ' + currentDay);
+//print("Days in month: " + daysMonth);
+
+if (currentDay < midMonth){
+  var surroundingMonth = currentMonth - 1;
+  var firstMonth=surroundingMonth;
+  var secondMonth= currentMonth;
+  var daysMonth2 = daysInMonth(surroundingMonth, currentYear);
+  var daysElasped = (currentDay + (daysMonth2 / 2));
+  var totalDays = ((daysMonth2 / 2) + (daysMonth / 2));
+  //print("Current day " + currentDay + "is less than " + midMonth);
+}
+else{
+  var surroundingMonth = currentMonth + 1;
+  var firstMonth=currentMonth;
+  var secondMonth=surroundingMonth;
+  var daysMonth2 = daysInMonth(surroundingMonth,currentYear);
+  var daysElasped = currentDay-midMonth; 
+  var totalDays = ((daysMonth2 / 2) + (daysMonth / 2));
+  //print("Current day " + currentDay + " is greater than " + midMonth);
+}
+var converseDateFraction = daysElasped / totalDays; // divide by total days
+var dateFraction = 1 - converseDateFraction; 
+
+
+var aveTemp= ee.Image("users/MissouriRCII/taveraster"+firstMonth).multiply(dateFraction);
+var averageTemp = aveTemp.add(ee.Image("users/MissouriRCII/taveraster"+secondMonth).multiply(converseDateFraction));
+//print(dateFraction+" "+converseDateFraction);
+var averageTemp_r = averageTemp.reproject('EPSG:4326',null,11000);
+var anomalyTemp_C= averageTemp.subtract(temp.mean());
+var anomalyTemp= anomalyTemp_C.multiply(1.8).add(32);
+// end Linear Temp interpolation
+
+var pdsi = ee.ImageCollection('IDAHO_EPSCOR/PDSI');
+// Get the date range of images in the collection.
+var pdsi_dates = ee.List(pdsi.get('date_range'));
+var recent_pdsi = pdsi_dates.get(1); 
+var d = ee.Date(recent_pdsi); 
+var pdsi_start = d.advance(-1, 'day');
+var pdsi_date = pdsi.limit(1,'system:time_start', false);
+var pdsi_date2= pdsi_date.min().multiply(-1);
+var nlcd = ee.ImageCollection("USGS/NLCD")
+var lc= nlcd.limit(1,'system:time_start',false).min();
+
+//Mask areas in an image collection that are classified as wetlands or 'no vegatation' with NLCD data
+var maskWater = function (image){
+  var lcoverNoVeg = lc.gt(31);
+  var Wetlands = lc.lt(90);
+  var remove = lcoverNoVeg.and(Wetlands);
+  return image.updateMask(remove)};
+  
+//Mask all non-grassland area from image collection 
+var lcoverGrass = lc.gte(71).and(lc.lte(81));
+var NDIIgrassTemp = function (image){
+  return image.updateMask(lcoverGrass)};
+
+//Mask all non-woody plants from image collection 
+var lcWoody = lc.gt(31).and(lc.lt(53));
+var NDIIwoodyTemp = function (image){
+  return image.updateMask(lcWoody)};
+  
+//Mask all non-cropland from image collection 
+var lcCrop = lc.eq(82);
+var NDIIcropTemp = function (image){
+  return image.updateMask(lcCrop)};
+
+
+//MODIS 8-day imagery 
+var modisCol = ee.ImageCollection('MODIS/MYD09A1');
+var modis_dates = ee.List(modisCol.get('date_range'));
+var recent_modis = modis_dates.get(1); 
+var m = ee.Date(recent_modis); 
+var modis_start = m.advance(-17, 'day'); // get the two most recent images
+var modis = modisCol.filterDate(modis_start, recent_modis);
+
+//Collect the NDII normal from the Asset folder to calculate NDII anomaly 
+var now = new Date();
+var start = new Date(date.getFullYear(), 0, 0);
+var diff = date - start;
+var doy = Math.floor(diff / DAY);
+//print('Day of year: ' + doy);
+var woy=Math.floor(doy/8);
+var ndiiCol = ee.Image('users/MissouriRCII/NDIIperiod'+woy);
+
+
+//Calculate Normailsed Difference Infrared Index (NDII) and Normailised Difference Snow Index (NDSI) and add the bands to the image collection or image
+var addNDIIband5 = function(image) {
+  var ndii5 = image.normalizedDifference(['sur_refl_b02', 'sur_refl_b05']); // another version of NDII uses band 6 instead of band 5. We chose band 5 for this study
+  return image.addBands(ndii5.rename('NDIIband5'))};
+var addNDSI = function(image) {
+  var ndsii = image.normalizedDifference(['sur_refl_b04', 'sur_refl_b06']);
+  return image.addBands(ndsii.rename('NDSI'))};
+  
+var band5 = modis.map(addNDIIband5); // map (apply the) NDII function on collection
+var allBands = band5.map(addNDSI); // map (apply the) NDSI function on collection
+var ndsi = allBands.select('NDSI'); //shows only the NDSI
+var band_sel5 = allBands.select('NDIIband5'); //shows only the NDII
+var band5mean = band_sel5.mean();
+var ndiiDOY = band5mean.subtract(ndiiCol);
+var element_count = band_sel5.aggregate_count( '.all' ).getInfo();
+
+//apply the functions to the MODIS Image Collection
+var clipped = modis.map(clipper); //clip MODIS to the MRB
+var masked = clipped.map(maskWater); //mask out water and non-veg cover 
+var ndii = clipped.map(addNDIIband5);
+
+//print(element_count);
+var modis_list = band_sel5.toList(element_count);
+
+//this is a loop to take the NDII differene from the most recent MODIS image to the previous 
+for (var i = 0; i < element_count - 1; ++i) { 
+  var img1 = ee.Image(modis_list.get(i+1)).clip(fc).select('NDIIband5'); //Extract image from list
+  var img2 = ee.Image(modis_list.get(i)).clip(fc).select('NDIIband5'); //Extract image from list
+  var ndiiDiff = img2.subtract(img1); //finds the diffence between the curent week and this week
+}
+
+//Calcuate Relative Humidity 
+var temp_maxRH = temp.max();
+var dew_mean= dew.mean();
+// convert Temp and Dewpoint to Relative Humdity using August-Roche-Magnus Aproximation. Do not modify.
+var value1= dew_mean.multiply(17.625);
+var value2 = dew_mean.add(243.04);
+var numerator = value1.divide(value2);
+var value3 = temp_maxRH.multiply(17.625);
+var value4 = temp_maxRH.add(243.04);
+var divisor= value3.divide(value4);
+var value5 = numerator.exp();
+var value6 = divisor.exp();
+var RH = value5.divide(value6).multiply(100);
+
+//take max/min/mean 
+var pdsi_min = pdsi_date.min();
+var RHmin_x = RH;
+var wind_max = wind.max();
+var wind_mph = wind_max.multiply(2.23694);//Convert m/s to mph
+var temp_max = temp.max();
+var temp_degrees = temp_max.multiply(1.8).add(32); //Converts Celsius to Farenheit 
+var precipMax = precip.max();
+var precipMax2day=precip2day.max();
+var ndsi_min= ndsi.min();
+
+// reproject all datasets
+var pdsi_r = pdsi_min.reproject('EPSG:4326',null,11000);
+var aTemp_r = anomalyTemp.reproject('EPSG:4326',null,11000);
+var temp_max_r = temp_degrees.reproject('EPSG:4326',null,11000); 
+var RHmin_r = RHmin_x.reproject('EPSG:4326',null,11000);
+var wind_r = wind_mph.reproject('EPSG:4326',null,11000);
+var precipMax_r = precipMax.reproject('EPSG:4326',null,11000);
+var precipMax2day_r = precipMax2day.reproject('EPSG:4326',null,11000);
+var ndsi_r = ndsi_min.reproject('EPSG:4326',null,11000);
+var ndiiDOY_r = ndiiDOY.reproject('EPSG:4326',null,11000);
+var ndiidiff_r=ndiiDiff.reproject('EPSG:4326',null,11000);
+var diff_abs = ndiidiff_r.abs();
+
+//THRESHOLDS
+var wind_th = wind_r.gt(windThreshold); 
+var temp_th = temp_max_r.gt(5);
+var pdsi_th = pdsi_r.lt(pdsiThreshold);
+var precip_th = precipMax_r.lte(wettingRainThreshold).and(precipMax2day_r.lte(soakingRainThreshold));
+var aTemp_th = aTemp_r.gt(tempAnomalyThreshold);
+var RH_th = RHmin_r.lt(rhThreshold);
+var ndsi_th = ndsi_r.gt(0.2);
+var ndiiDOY_th = ndiiDOY_r.lt(0);
+var ndiiDiff_th = diff_abs.gt(0.08)
+var NDIIanom_th = ndiiDOY_r.gt(0.08); //change for each NLCD landcover type
+
+
+//Clip to MRB
+var matrix= ee.Image(0);
+var pdsi_aoi = pdsi_r.clip(fc);
+var pdsi_th_aoi = pdsi_th.clip(fc);
+var RH_aoi= RHmin_r.clip(fc);
+var RH_th_aoi = RH_th.clip(fc);
+var wind_th_aoi = wind_th.clip(fc);
+var wind_aoi=wind_r.clip(fc);
+var aTemp_th_aoi = aTemp_th.clip(fc);
+var aTemp_aoi = aTemp_r.clip(fc);
+var temp_th_aoi=temp_th.clip(fc);
+var temp_aoi=temp_max_r.clip(fc);
+var precip2d_aoi= precipMax2day_r.clip(fc);
+var precip_aoi= precipMax_r.clip(fc);
+var precip_th_aoi= precip_th.clip(fc);
+var ndiiDOY_th_aoi = ndiiDOY_th.clip(fc);
+var ndiiDOY_aoi = ndiiDOY.clip(fc);
+var ndiiDiff_th_aoi = ndiiDiff_th.clip(fc);
+var ndiiAnom_th_aoi = NDIIanom_th.clip(fc);
+var ndsi_th_aoi = ndsi_th.clip(fc);
+var ndsi_aoi = ndsi_r.clip(fc);
+var tempCom_th_aoi = aTemp_th_aoi;
+
+//Sesonal weighting
+
+//November-April
+ if(currentMonth>=11|currentMonth<=4){
+var matrix= matrix.add(pdsi_th_aoi.multiply(0.1));
+var matrix= matrix.add(RH_th_aoi.multiply(0.12));
+var matrix= matrix.add(wind_th_aoi.multiply(0.08));
+var matrix= matrix.add(temp_th_aoi.multiply(0.15)); //changed from .1
+var matrix= matrix.add(aTemp_th_aoi.multiply(0.15));
+var matrix= matrix.add(ndsi_th_aoi.multiply(-1));
+var matrix= matrix.add(precip_th_aoi.multiply(0.1));
+var matrix= matrix.add(ndiiDiff_th_aoi.multiply(0.05)); //changed  .1
+var matrix = matrix.add(ndiiAnom_th_aoi.multiply(0.15))
+ }
+
+//May-June
+ if(currentMonth>=5&currentMonth<7){
+var matrix= matrix.add(pdsi_th_aoi.multiply(0.2));
+var matrix= matrix.add(RH_th_aoi.multiply(0.1));
+var matrix= matrix.add(wind_th_aoi.multiply(0.1));
+var matrix= matrix.add(temp_th_aoi.multiply(0.25));
+var matrix= matrix.add(ndsi_th_aoi.multiply(-1));
+var matrix= matrix.add(precip_th_aoi.multiply(0.1));
+var matrix= matrix.add(ndiiDiff_th_aoi.multiply(0.1));
+var matrix = matrix.add(ndiiAnom_th_aoi.multiply(0.15))
+ }
+ 
+//July-October
+ if(currentMonth>=7&currentMonth<=10){
+var matrix= matrix.add(pdsi_th_aoi.multiply(0.1)); //changed from .1
+var matrix= matrix.add(RH_th_aoi.multiply(0.1));
+var matrix= matrix.add(wind_th_aoi.multiply(0.1));
+var matrix= matrix.add(aTemp_th_aoi.multiply(0.25)); //changed from .25
+var matrix= matrix.add(ndsi_th_aoi.multiply(-1));
+var matrix= matrix.add(precip_th_aoi.multiply(0.1));
+var matrix= matrix.add(ndiiDOY_th_aoi.multiply(0.1)); //changed from .1
+var matrix = matrix.add(ndiiDiff_th_aoi.multiply(0.2))
+ }
+ 
+//Map Display
+Map.setCenter(-102.49701, 43.56019, 5); //map extent 
+
+//Map.addLayer(ndsi, {min:0, max:1},"NDSI",false);
+Map.addLayer(matrix,      {min:0, max:1,palette:['FFFFFF','FFFD00','FFA305','E80100','730100']},'Fire Potential',true);
+Map.addLayer(ndsi_th_aoi,{min:0,max:1, palette:['B90000','0074D9']},"NDSI Threshold",false);
+//Map.addLayer(ndsi_aoi,{min:-1,max:1,palette:['2222FF','FFFFFF']},"NDSI",false);
+//Map.addLayer(ndiiDOY_aoi, {min:-1, max:1, palette:['FF0000','FF3333','FFFFFF','33DD33','00DD00']}, 'NDII Anomaly', false);
+Map.addLayer(ndiiDOY_th_aoi, {min:0,max:1, palette:['B90000','0074D9']}, 'NDII Anomaly Threshold', false);
+Map.addLayer(ndiiDiff_th_aoi, {min:0,max:1, palette:['B90000','0074D9']}, 'NDII Change from previous week Threshold', false);
+//Map.addLayer(aTemp_aoi,    {min:-10, max:10, palette:['0000E0','FFFFFF','DD4400']}, 'Temperature Anomaly',false);
+Map.addLayer(aTemp_th_aoi,    {min:0, max:1, palette:['B90000','0074D9']}, 'Temperature Threshold',false);
+//Map.addLayer(temp_aoi,    {min:-20, max:100,palette:['CC64B0','764BA8','C0C4E9','6063C2','357AF1','00FFFF','43C860','22A411','FFF67B','F8AB54','C71D04','9C182F','D05F61']}, 'Temperature Max',false);
+Map.addLayer(RH_th_aoi,      {min:0 , max:1, palette:['B90000','0074D9'] }, 'Relative Humidity Threshold',false);
+//Map.addLayer(RH_aoi,      {min:0 , max:100, palette:['9E410A','EEEEEE','257716'] }, 'Relative Humidity',false);
+Map.addLayer(wind_th_aoi, {min:0, max: 1, palette:['B90000','0074D9']}, 'Wind max threshold',false);
+//Map.addLayer(wind_aoi, {min:0, max: 60 , palette:["FFFFFF",'48B6E0','640CE8','FF0000','E8910C','E9FF0D'] }, 'Wind mMx',false);
+//Map.addLayer(pdsi_aoi,   {min:-4, max:4,palette:["FC9A04",'FCCE04','FCFE64','FFFFFF','9CFE9C','64CE64','048A04']}, 'PDSI',false);
+Map.addLayer(pdsi_th_aoi,   {min:0, max:1, palette:['B90000','0074D9']}, 'PDSI Threshold',false);
+//Map.addLayer(precip2d_aoi, {min:0, max:30,palette:['FFFFFF','008A22','009944','008866','662266','A00033']},'Precipitation in last 2 days',false);
+//Map.addLayer(precip_aoi, {min:0, max:30,palette:['FFFFFF','008A22','009944','008866','662266','A00033']},'Precipitation in last 5 days',false);
+Map.addLayer(precip_th_aoi,     {min:0, max:1, palette:['B90000','0074D9']},'Precipitation Threshold',false);
+
+// Create an empty image into which to paint the features, cast to byte.
+var empty = ee.Image().byte();
+// Paint all the polygon edges with the same number and width, display.
+var outline = empty.paint({
+  featureCollection: boundaries,
+  color: 1,
+  width: 0.5
+});
+Map.addLayer(outline, {palette: '000000'}, 'BIA Boundaries');
+
+var empty2 = ee.Image().byte();
+// Paint all the polygon edges with the same number and width, display.
+var outline2 = empty.paint({
+  featureCollection: fc,
+  color: 1,
+  width: 1
+});
+Map.addLayer(outline2, {palette: '000000'}, 'MRB Boundary');
